@@ -1,34 +1,21 @@
-#!/usr/bin/env python3
-"""make.fun entry point for "world-news-2026-11-19".
-
-Copies the pre-rendered ``entry.png`` from this repository to
-``/output/entry.png``.  Standard library only, no network, deterministic.
-"""
-
-from __future__ import annotations
+"""Copy the committed poster into the output directory for the make.fun harness."""
 
 import os
 import shutil
 import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-SOURCE = os.path.join(HERE, "entry.png")
-OUTPUT_DIR = "/output"
-DEST = os.path.join(OUTPUT_DIR, "entry.png")
 
-
-def main() -> int:
-    if not os.path.isfile(SOURCE):
-        print(f"error: missing {SOURCE}", file=sys.stderr)
+def main():
+    here = os.path.dirname(os.path.abspath(__file__))
+    source = os.path.join(here, "entry.png")
+    if not os.path.isfile(source):
+        sys.stderr.write("entry.png is missing beside main.py\n")
         return 1
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    shutil.copyfile(SOURCE, DEST)
-
-    written = os.path.getsize(DEST)
-    print(f"wrote {written} bytes to {DEST}")
+    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "").strip() or "/output"
+    os.makedirs(out_dir, exist_ok=True)
+    shutil.copyfile(source, os.path.join(out_dir, "entry.png"))
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

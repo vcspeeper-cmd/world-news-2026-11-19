@@ -1,421 +1,340 @@
-#!/usr/bin/env python3
-"""Draw the make.fun "news-image-20261119" editorial poster.
+"""Render a deterministic 1024x1024 editorial news poster (19 November 2026)."""
 
-Deterministic: no randomness, no clocks, no network, no locale-dependent
-formatting.  Running this twice produces byte-identical PNG output.
-"""
-
-from __future__ import annotations
-
-import math
 import os
 
 from PIL import Image, ImageDraw, ImageFont
 
-# --------------------------------------------------------------------------
-# Canvas + palette
-# --------------------------------------------------------------------------
-
-W = H = 1024
-MARGIN = 56
-
-BG = (11, 18, 32)          # #0B1220
-DOT = (27, 38, 60)
-BAND = (14, 22, 39)
-PANEL = (17, 26, 44)
-PANEL_EDGE = (34, 48, 74)
-WHITE = (244, 247, 252)
-GOLD = (226, 184, 74)
-GREY = (140, 152, 172)
-MUTED = (104, 116, 136)
-
-BLUE = (59, 130, 246)
-RED = (239, 68, 68)
-SILVER = (156, 163, 175)
-
-US_RED = (178, 34, 52)
-US_BLUE = (60, 59, 110)
-CN_RED = (222, 41, 16)
-CN_YELLOW = (255, 222, 0)
-RU_BLUE = (0, 57, 166)
-RU_RED = (213, 43, 30)
-
-# --------------------------------------------------------------------------
-# Layout constants (module level so the layout can be audited independently)
-# --------------------------------------------------------------------------
-
-MAST_TOP, MAST_BOTTOM = 0, 134
-P1_TOP, P1_BOTTOM = 148, 620
-P2_TOP, P2_BOTTOM = 636, 920
-FOOT_RULE_TOP, FOOT_RULE_BOTTOM = 936, 938
-
-INNER_L = MARGIN + 24
-INNER_R = W - MARGIN - 24
-INNER_W = INNER_R - INNER_L
-
-FLAG_W, FLAG_H, FLAG_GAP = 72.0, 48.0, 18.0
-GAVEL_SIZE = 64
+SIZE = 1024
+MARGIN = 44
 
 FONT_DIR = "/usr/share/fonts/truetype/dejavu"
+FONT_REGULAR = os.path.join(FONT_DIR, "DejaVuSans.ttf")
+FONT_BOLD = os.path.join(FONT_DIR, "DejaVuSans-Bold.ttf")
 
-# The three fonts named by the brief, plus a serif-regular fallback chain so
-# the body copy can be set in a regular serif face when one is installed.
-SANS_BOLD = [f"{FONT_DIR}/DejaVuSans-Bold.ttf"]
-SANS = [f"{FONT_DIR}/DejaVuSans.ttf"]
-SERIF_BOLD = [f"{FONT_DIR}/DejaVuSerif-Bold.ttf", f"{FONT_DIR}/DejaVuSans-Bold.ttf"]
-SERIF = [
-    f"{FONT_DIR}/DejaVuSerif.ttf",
-    f"{FONT_DIR}/DejaVuSerif-Bold.ttf",
-    f"{FONT_DIR}/DejaVuSans.ttf",
-]
+BG = (10, 16, 28)
+DOT = (26, 36, 56)
+PANEL = (17, 26, 44)
+EDGE = (36, 50, 80)
+WHITE = (245, 248, 252)
+GREY = (150, 162, 180)
+MUTED = (108, 120, 140)
+GOLD = (228, 186, 76)
+RED = (222, 66, 66)
+BLUE = (72, 118, 210)
 
-HEADLINE_1 = "TRUMP, XI AND PUTIN MEET FOR THE FIRST TIME"
-BODY_1 = (
-    "The three leaders sign a \u2018Declaration Towards Peace\u2019 in Shenzhen, "
-    "and say the US, China and Russia are \u2018uniquely positioned\u2019 to talk "
-    "about cutting nuclear arsenals."
-)
-HEADLINE_2 = "UN COURT: MYANMAR COMMITTED GENOCIDE"
-BODY_2 = (
-    "The International Court of Justice finds Myanmar\u2019s security forces "
-    "\u2018acted with genocidal intent\u2019 against the Rohingya in the 2017 "
-    "Rakhine State operations. Rohingya refugees watch the ruling from "
-    "Cox\u2019s Bazar."
-)
-
-_font_cache: dict[tuple[tuple[str, ...], int], ImageFont.FreeTypeFont] = {}
+MIDDOT = " · "
+_FONTS = {}
 
 
-def load_font(candidates: list[str], size: int) -> ImageFont.FreeTypeFont:
-    """Return the first font in ``candidates`` that exists, at ``size`` px."""
-    key = (tuple(candidates), size)
-    cached = _font_cache.get(key)
-    if cached is not None:
-        return cached
-    for path in candidates:
-        if os.path.exists(path):
-            font = ImageFont.truetype(path, size)
-            _font_cache[key] = font
-            return font
-    raise FileNotFoundError(f"none of these fonts exist: {candidates}")
+# ---------------------------------------------------------------- typography
+
+def F(size, bold=False):
+    """Cached font factory."""
+    key = (int(size), bool(bold))
+    font = _FONTS.get(key)
+    if font is None:
+        font = ImageFont.truetype(FONT_BOLD if key[1] else FONT_REGULAR, key[0])
+        _FONTS[key] = font
+    return font
 
 
-# --------------------------------------------------------------------------
-# Text helpers
-# --------------------------------------------------------------------------
+def tw(draw, text, size, bold=False):
+    """Rendered width of text."""
+    return float(draw.textlength(text, font=F(size, bold)))
 
 
-def wrap(draw: ImageDraw.ImageDraw, text: str, font, max_width: float) -> list[str]:
-    """Greedy word wrap measured with ``textlength`` so nothing overflows."""
-    lines: list[str] = []
-    current = ""
-    for word in text.split():
-        trial = word if not current else current + " " + word
-        if draw.textlength(trial, font=font) <= max_width:
-            current = trial
-        else:
-            if current:
-                lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
+def fit(draw, text, size, bold, maxw, minsize=8):
+    """Shrink a font size until the single line fits maxw."""
+    s = int(size)
+    while s > minsize and tw(draw, text, s, bold) > maxw:
+        s -= 1
+    return s
+
+
+def tracked(draw, text, x, y, size, bold, color, gap=1):
+    """Draw text with a fixed extra gap between characters."""
+    cx = float(x)
+    font = F(size, bold)
+    for ch in text:
+        draw.text((int(round(cx)), int(y)), ch, font=font, fill=color)
+        cx += tw(draw, ch, size, bold) + gap
+    return cx - gap
+
+
+def wrap(draw, text, size, bold, maxw):
+    """Balanced word wrap: dynamic programming over break points."""
+    words = text.split()
+    if not words:
+        return []
+    sp = tw(draw, " ", size, bold)
+    widths = [tw(draw, w, size, bold) for w in words]
+    n = len(words)
+    inf = float("inf")
+    best = [inf] * (n + 1)
+    nxt = [n] * (n + 1)
+    best[n] = 0.0
+    penalty = 0.02 * maxw * maxw
+    for i in range(n - 1, -1, -1):
+        total = -sp
+        for j in range(i + 1, n + 1):
+            total += widths[j - 1] + sp
+            if total > maxw and j > i + 1:
+                break
+            slack = maxw - total
+            cost = slack * slack + penalty
+            if best[j] + cost < best[i] - 1e-12:
+                best[i] = best[j] + cost
+                nxt[i] = j
+    lines = []
+    i = 0
+    while i < n:
+        j = nxt[i]
+        if j <= i:
+            j = i + 1
+        lines.append(" ".join(words[i:j]))
+        i = j
     return lines
 
 
-def fit_headline(
-    draw: ImageDraw.ImageDraw,
-    text: str,
-    candidates: list[str],
-    max_width: float,
-    max_lines: int,
-    hi: int,
-    lo: int,
-) -> tuple[ImageFont.FreeTypeFont, list[str]]:
-    """Largest font size in [lo, hi] whose wrap fits in ``max_lines`` lines."""
-    for size in range(hi, lo - 1, -1):
-        font = load_font(candidates, size)
-        lines = wrap(draw, text, font, max_width)
-        if len(lines) <= max_lines:
-            return font, lines
-    font = load_font(candidates, lo)
-    return font, wrap(draw, text, font, max_width)
+def draw_wrapped(draw, text, x, y, size, bold, color, maxw, leading, maxlines=None):
+    """Wrap text and draw its lines at x/y with a fixed leading."""
+    s = int(size)
+    lines = wrap(draw, text, s, bold, maxw)
+    if maxlines is not None:
+        while len(lines) > maxlines and s > 8:
+            s -= 1
+            lines = wrap(draw, text, s, bold, maxw)
+    for k, line in enumerate(lines):
+        draw.text((int(x), int(y + k * leading)), line, font=F(s, bold), fill=color)
+    return s, lines
 
 
-def tracked_width(draw: ImageDraw.ImageDraw, text: str, font, tracking: float) -> float:
-    if not text:
-        return 0.0
-    total = sum(draw.textlength(ch, font=font) for ch in text)
-    return total + tracking * (len(text) - 1)
+def panel(draw, box):
+    draw.rounded_rectangle(box, radius=10, fill=PANEL, outline=EDGE, width=1)
 
 
-def draw_tracked(
-    draw: ImageDraw.ImageDraw,
-    xy: tuple[float, float],
-    text: str,
-    font,
-    fill,
-    tracking: float = 0.0,
-    right: bool = False,
-) -> float:
-    """Draw letter-spaced text; returns the y coordinate just below it."""
-    x, y = xy
-    if right:
-        x -= tracked_width(draw, text, font, tracking)
-    for ch in text:
-        draw.text((x, y), ch, font=font, fill=fill)
-        x += draw.textlength(ch, font=font) + tracking
-    return y + font.size * 1.18
+# ------------------------------------------------------------------ flags
+
+FLAG_W = 66
+FLAG_H = 42
+
+_STAR_10 = (
+    (0.0, -1.0), (0.2245, -0.3090), (0.9511, -0.3090), (0.3633, 0.1180),
+    (0.5878, 0.8090), (0.0, 0.3820), (-0.5878, 0.8090), (-0.3633, 0.1180),
+    (-0.9511, -0.3090), (-0.2245, -0.3090),
+)
 
 
-def draw_paragraph(
-    draw: ImageDraw.ImageDraw,
-    xy: tuple[float, float],
-    text: str,
-    font,
-    fill,
-    max_width: float,
-    line_height: float,
-) -> float:
-    """Draw a wrapped paragraph; returns the y coordinate just below it."""
-    x, y = xy
-    for line in wrap(draw, text, font, max_width):
-        draw.text((x, y), line, font=font, fill=fill)
-        y += line_height
-    return y
+def star(draw, cx, cy, r, color):
+    pts = [(cx + ux * r, cy + uy * r) for ux, uy in _STAR_10]
+    draw.polygon(pts, fill=color)
 
 
-# --------------------------------------------------------------------------
-# Shape helpers
-# --------------------------------------------------------------------------
+def flag_us(draw, x, y):
+    draw.rectangle([x, y, x + FLAG_W - 1, y + FLAG_H - 1], fill=WHITE)
+    for i in range(0, 13, 2):
+        y0 = y + (i * FLAG_H) // 13
+        y1 = y + ((i + 1) * FLAG_H) // 13 - 1
+        draw.rectangle([x, y0, x + FLAG_W - 1, y1], fill=(192, 72, 72))
+    cw = 27
+    chh = 22
+    draw.rectangle([x, y, x + cw - 1, y + chh - 1], fill=(59, 78, 140))
+    for row in range(3):
+        for col in range(3):
+            if (row + col) % 2 == 0:
+                sx = x + 4 + col * 8
+                sy = y + 4 + row * 6
+                draw.ellipse([sx, sy, sx + 1, sy + 1], fill=WHITE)
 
 
-def star_points(cx: float, cy: float, r: float, rot_deg: float = -90.0):
-    """Ten alternating outer/inner vertices of a five-pointed star."""
-    pts = []
-    for i in range(10):
-        ang = math.radians(rot_deg + i * 36.0)
-        rad = r if i % 2 == 0 else r * 0.382
-        pts.append((cx + rad * math.cos(ang), cy + rad * math.sin(ang)))
-    return pts
+def flag_cn(draw, x, y):
+    draw.rectangle([x, y, x + FLAG_W - 1, y + FLAG_H - 1], fill=(196, 58, 58))
+    star(draw, x + 13, y + 12, 8, GOLD)
+    for sx, sy in ((25, 4), (30, 10), (30, 18), (25, 24)):
+        star(draw, x + sx, y + sy, 3, GOLD)
 
 
-def draw_flag_us(draw: ImageDraw.ImageDraw, x: float, y: float, w: float, h: float) -> None:
-    """13 stripes plus a blue canton carrying a grid of white dots."""
-    stripe = h / 13.0
-    for i in range(13):
-        top = y + i * stripe
-        colour = US_RED if i % 2 == 0 else WHITE
-        draw.rectangle([x, top, x + w, top + stripe], fill=colour)
-    canton_w = w * 0.4
-    canton_h = stripe * 7
-    draw.rectangle([x, y, x + canton_w, y + canton_h], fill=US_BLUE)
-    r = max(0.8, h * 0.024)
-    for col in range(4):
-        for row in range(3):
-            cx = x + canton_w * (col + 1) / 5.0
-            cy = y + canton_h * (row + 1) / 4.0
-            draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=WHITE)
+def flag_ru(draw, x, y):
+    h3 = FLAG_H // 3
+    draw.rectangle([x, y, x + FLAG_W - 1, y + h3 - 1], fill=WHITE)
+    draw.rectangle([x, y + h3, x + FLAG_W - 1, y + 2 * h3 - 1], fill=(72, 118, 210))
+    draw.rectangle([x, y + 2 * h3, x + FLAG_W - 1, y + FLAG_H - 1], fill=(222, 66, 66))
 
 
-def draw_flag_cn(draw: ImageDraw.ImageDraw, x: float, y: float, w: float, h: float) -> None:
-    """Red field, one large star and four small stars aimed at its centre."""
-    draw.rectangle([x, y, x + w, y + h], fill=CN_RED)
-    sx = w / 30.0
-    sy = h / 20.0
-    big_cx, big_cy = x + 5 * sx, y + 5 * sy
-    draw.polygon(star_points(big_cx, big_cy, 3.0 * sx), fill=CN_YELLOW)
-    for ux, uy in ((10.0, 2.0), (12.0, 4.0), (12.0, 7.0), (10.0, 9.0)):
-        cx, cy = x + ux * sx, y + uy * sy
-        # One point of each small star aims at the centre of the large star.
-        aim = math.degrees(math.atan2(big_cy - cy, big_cx - cx))
-        draw.polygon(star_points(cx, cy, 1.0 * sx, aim), fill=CN_YELLOW)
+# -------------------------------------------------------------- pictograms
+
+def pict_chart(draw, x, y, color=RED):
+    pts = [(x, y + 4), (x + 7, y + 11), (x + 15, y + 8),
+           (x + 23, y + 19), (x + 30, y + 26)]
+    draw.line(pts, fill=color, width=3, joint="curve")
 
 
-def draw_flag_ru(draw: ImageDraw.ImageDraw, x: float, y: float, w: float, h: float) -> None:
-    """White / blue / red horizontal thirds."""
-    third = h / 3.0
-    draw.rectangle([x, y, x + w, y + third], fill=WHITE)
-    draw.rectangle([x, y + third, x + w, y + 2 * third], fill=RU_BLUE)
-    draw.rectangle([x, y + 2 * third, x + w, y + h], fill=RU_RED)
+def pict_thermometer(draw, x, y, color=GOLD):
+    draw.rounded_rectangle([x + 12, y + 1, x + 18, y + 20], radius=3,
+                           outline=color, width=2)
+    draw.ellipse([x + 9, y + 17, x + 21, y + 29], fill=color)
 
 
-def draw_gavel(base: Image.Image, x: float, y: float, size: int) -> None:
-    """Small gold gavel built from rounded rectangles on a rotated layer."""
-    layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    d = ImageDraw.Draw(layer)
-    s = size / 120.0
-    gold = GOLD + (255,)
-    # head of the gavel
-    d.rounded_rectangle([30 * s, 24 * s, 94 * s, 48 * s], radius=11 * s, fill=gold)
-    # handle
-    d.rounded_rectangle([55 * s, 46 * s, 67 * s, 104 * s], radius=6 * s, fill=gold)
-    layer = layer.rotate(-38.0, resample=Image.BICUBIC, expand=False)
-    base.paste(layer, (int(round(x)), int(round(y))), layer)
+def pict_arrow(draw, x, y, color=BLUE):
+    draw.line([(x + 1, y + 26), (x + 20, y + 7)], fill=color, width=3)
+    draw.polygon([(x + 24, y + 3), (x + 13, y + 6), (x + 21, y + 14)], fill=color)
 
 
-def draw_figure(
-    draw: ImageDraw.ImageDraw,
-    cx: float,
-    top: float,
-    colour,
-    head_r: float,
-    body_w: float,
-    body_h: float,
-) -> None:
-    """A seated silhouette: circle head over a rounded-rectangle body."""
-    draw.ellipse([cx - head_r, top, cx + head_r, top + 2 * head_r], fill=colour)
-    body_top = top + 2 * head_r + 4
-    draw.rounded_rectangle(
-        [cx - body_w / 2, body_top, cx + body_w / 2, body_top + body_h],
-        radius=body_w * 0.42,
-        fill=colour,
-    )
+_DIRS8 = (
+    (0.0, -1.0), (0.7071, -0.7071), (1.0, 0.0), (0.7071, 0.7071),
+    (0.0, 1.0), (-0.7071, 0.7071), (-1.0, 0.0), (-0.7071, -0.7071),
+)
 
 
-# --------------------------------------------------------------------------
-# Poster
-# --------------------------------------------------------------------------
+def starburst(draw, cx, cy, r, color):
+    """Central disc plus eight tapered spikes."""
+    for dx, dy in _DIRS8:
+        px, py = -dy, dx
+        tip = (cx + dx * r * 2.0, cy + dy * r * 2.0)
+        b1 = (cx + dx * r * 0.55 + px * 4.0, cy + dy * r * 0.55 + py * 4.0)
+        b2 = (cx + dx * r * 0.55 - px * 4.0, cy + dy * r * 0.55 - py * 4.0)
+        draw.polygon([tip, b1, b2], fill=color)
+    draw.ellipse([cx - 5, cy - 5, cx + 5, cy + 5], fill=color)
 
 
-def build() -> Image.Image:
-    img = Image.new("RGB", (W, H), BG)
+def scales(draw, cx, beam_y, color):
+    """Scales of justice, kept inside x 800-950 and y 250-420."""
+    left = cx - 51
+    right = cx + 51
+    draw.line([(left, beam_y), (right, beam_y)], fill=color, width=2)
+    draw.line([(cx, beam_y - 8), (cx, beam_y + 64)], fill=color, width=2)
+    draw.ellipse([cx - 4, beam_y - 12, cx + 4, beam_y - 4], outline=color, width=2)
+    draw.rounded_rectangle([cx - 26, beam_y + 64, cx + 26, beam_y + 74],
+                           radius=4, outline=color, width=2)
+    for px in (left, right):
+        draw.line([(px, beam_y), (px, beam_y + 14)], fill=color, width=2)
+        draw.polygon(
+            [(px - 22, beam_y + 14), (px + 22, beam_y + 14),
+             (px + 14, beam_y + 24), (px - 14, beam_y + 24)],
+            outline=color,
+        )
+
+
+# ------------------------------------------------------------------- page
+
+def pair(draw, first, second, x, y):
+    draw.text((x, y), first, font=F(15), fill=GREY)
+    x2 = x + tw(draw, first, 15) + tw(draw, MIDDOT, 15)
+    draw.text((int(round(x2)), y), second, font=F(15), fill=GREY)
+
+
+def main():
+    img = Image.new("RGB", (SIZE, SIZE), BG)
     draw = ImageDraw.Draw(img)
 
     # Faint dot grid.
-    step = 32
-    for gx in range(step // 2, W, step):
-        for gy in range(step // 2, H, step):
+    for gy in range(16, SIZE, 32):
+        for gx in range(16, SIZE, 32):
             draw.ellipse([gx - 1, gy - 1, gx + 1, gy + 1], fill=DOT)
 
-    # ---------------- Masthead ----------------
-    draw.rectangle([0, MAST_TOP, W, MAST_BOTTOM - 2], fill=BAND)
-    draw.rectangle([0, MAST_BOTTOM - 2, W, MAST_BOTTOM], fill=GOLD)
+    # 1. Masthead.
+    ms = fit(draw, "THE WORLD TODAY", 62, True, 660)
+    draw.text((MARGIN, 30), "THE WORLD TODAY", font=F(ms, True), fill=WHITE)
 
-    masthead = load_font(SERIF_BOLD, 54)
-    draw.text((MARGIN, 22), "THE WORLD TODAY", font=masthead, fill=WHITE)
+    r1 = "ONE DAY, ONE PICTURE"
+    r2 = "EDITION 19.11.26"
+    draw.text((int(round(980 - tw(draw, r1, 15, True))), 38), r1,
+              font=F(15, True), fill=GOLD)
+    draw.text((int(round(980 - tw(draw, r2, 15, False))), 60), r2,
+              font=F(15, False), fill=MUTED)
 
-    date_font = load_font(SANS_BOLD, 19)
-    draw_tracked(
-        draw, (MARGIN + 2, 92), "THURSDAY 19 NOVEMBER 2026", date_font, GOLD, tracking=2.4
+    # 2. Dateline.
+    draw.text((MARGIN, 100), "THURSDAY 19 NOVEMBER 2026",
+              font=F(26, True), fill=GOLD)
+    draw.rectangle([MARGIN, 132, 980, 133], fill=GOLD)
+
+    # 3. Lead panel.
+    panel(draw, (44, 146, 980, 470))
+    flag_us(draw, 68, 168)
+    flag_cn(draw, 144, 168)
+    flag_ru(draw, 220, 168)
+
+    tracked(draw, "THE HAGUE · WORLD COURT", 68, 226, 15, True, GOLD, 1)
+
+    headline = "MYANMAR COMMITTED GENOCIDE, RULES UN COURT"
+    hs = fit(draw, headline, 44, True, 620)
+    draw.text((68, 248), headline, font=F(hs, True), fill=WHITE)
+
+    lead = (
+        "Judges at the International Court of Justice found Myanmar's security "
+        "forces acted with genocidal intent against the Rohingya, the first such "
+        "ruling against a state in the court's history."
     )
+    lead_size = 15
+    for size in (18, 17, 16, 15):
+        if len(wrap(draw, lead, size, False, 610)) <= 3:
+            lead_size = size
+            break
+    draw_wrapped(draw, lead, 68, 318, lead_size, False, GREY, 610, 27)
 
-    small = load_font(SANS, 15)
-    draw_tracked(
-        draw, (W - MARGIN, 42), "ONE DAY, ONE PICTURE", small, GREY, tracking=1.2, right=True
-    )
-    draw_tracked(
-        draw, (W - MARGIN, 68), "EDITION 19.11.26", small, MUTED, tracking=1.2, right=True
-    )
+    draw.text((68, 424), "LANDMARK JUDGMENT · THE GAMBIA V. MYANMAR",
+              font=F(13, True), fill=MUTED)
 
-    # ---------------- Panel 1: Shenzhen summit ----------------
-    draw.rounded_rectangle(
-        [MARGIN, P1_TOP, W - MARGIN, P1_BOTTOM],
-        radius=18,
-        fill=PANEL,
-        outline=PANEL_EDGE,
-        width=2,
-    )
+    scales(draw, 875, 288, GOLD)
 
-    # Three flags drawn from shapes.
-    fx = INNER_L
-    fy = P1_TOP + 24
-    for painter in (draw_flag_us, draw_flag_cn, draw_flag_ru):
-        painter(draw, fx, fy, FLAG_W, FLAG_H)
-        draw.rectangle([fx, fy, fx + FLAG_W, fy + FLAG_H], outline=(70, 84, 110), width=1)
-        fx += FLAG_W + FLAG_GAP
+    # 4. Second panel.
+    panel(draw, (44, 484, 980, 626))
+    starburst(draw, 102, 555, 12, RED)
 
-    # Gold caption.
-    cap_font = load_font(SANS_BOLD, 16)
-    y = draw_tracked(
-        draw, (INNER_L, fy + FLAG_H + 20), "SHENZHEN  \u00b7  APEC", cap_font, GOLD, tracking=3.0
-    )
+    headline2 = "IRAN WAR ESCALATES AS US STRIKES AGAIN"
+    hs2 = fit(draw, headline2, 34, True, 828)
+    draw.text((128, 508), headline2, font=F(hs2, True), fill=WHITE)
 
-    # Headline, wrapped to at most two lines.
-    head_font, head_lines = fit_headline(
-        draw, HEADLINE_1, SANS_BOLD, INNER_W, max_lines=2, hi=46, lo=28
-    )
-    y += 14
-    for line in head_lines:
-        draw.text((INNER_L, y), line, font=head_font, fill=WHITE)
-        y += head_font.size * 1.2
-
-    # Body paragraph in a regular serif face.
-    body_font = load_font(SERIF, 19)
-    y = draw_paragraph(draw, (INNER_L, y + 16), BODY_1, body_font, GREY, INNER_W, 27)
-
-    # Three seated-figure silhouettes.
-    fig_top = y + 20
-    head_r, body_w, body_h = 12.0, 52.0, 46.0
-    fig_h = 2 * head_r + 4 + body_h
-    spacing = 92.0
-    start_cx = (INNER_L + INNER_R) / 2 - spacing
-    for i, colour in enumerate((BLUE, RED, SILVER)):
-        draw_figure(draw, start_cx + i * spacing, fig_top, colour, head_r, body_w, body_h)
-
-    # Gold kicker and grey sub-line under the figures.
-    y = fig_top + fig_h + 18
-    kick_font = load_font(SANS_BOLD, 16)
-    y = draw_tracked(
-        draw, (INNER_L, y), "FIRST-EVER TRILATERAL", kick_font, GOLD, tracking=2.6
-    )
-    sub_font = load_font(SANS, 14)
-    draw_tracked(
-        draw, (INNER_L, y + 4), "SUMMIT  \u00b7  SHENZHEN, CHINA", sub_font, MUTED, tracking=1.6
-    )
-
-    # ---------------- Panel 2: ICJ ruling ----------------
-    draw.rounded_rectangle(
-        [MARGIN, P2_TOP, W - MARGIN, P2_BOTTOM],
-        radius=18,
-        fill=PANEL,
-        outline=PANEL_EDGE,
-        width=2,
-    )
-
-    draw_gavel(img, INNER_L, P2_TOP + 24, GAVEL_SIZE)
-
-    head2_font, head2_lines = fit_headline(
-        draw, HEADLINE_2, SANS_BOLD, INNER_W, max_lines=2, hi=34, lo=22
-    )
-    y = P2_TOP + 24 + GAVEL_SIZE + 12
-    for line in head2_lines:
-        draw.text((INNER_L, y), line, font=head2_font, fill=WHITE)
-        y += head2_font.size * 1.2
-
-    body2_font = load_font(SERIF, 17)
-    draw_paragraph(draw, (INNER_L, y + 12), BODY_2, body2_font, GREY, INNER_W, 25)
-
-    # ---------------- Footer ----------------
-    draw.rectangle([0, FOOT_RULE_TOP, W, FOOT_RULE_BOTTOM], fill=GOLD)
-    foot_font = load_font(SANS_BOLD, 17)
-    draw_tracked(
+    draw_wrapped(
         draw,
-        (MARGIN, 962),
-        "19 NOVEMBER 2026  \u00b7  THE DAY IN ONE IMAGE",
-        foot_font,
-        GOLD,
-        tracking=2.2,
-    )
-    foot_right = load_font(SANS, 15)
-    draw_tracked(
-        draw,
-        (W - MARGIN, 964),
-        "SHENZHEN  \u00b7  THE HAGUE",
-        foot_right,
-        MUTED,
-        tracking=1.6,
-        right=True,
+        "New US retaliatory strikes hit Iranian bases as Tehran threatens the "
+        "Strait of Hormuz; Trump says he sees no rush and points to next year.",
+        128, 552, 18, False, GREY, 800, 24, 2,
     )
 
-    return img
+    # 5. Brief row.
+    briefs = (
+        (44, pict_chart, "NVIDIA FIZZLES",
+         "Earnings beat estimates, yet the stock slipped 1.6% to $148.55 and "
+         "the S&P closed mixed."),
+        (356, pict_thermometer, "INFLATION AT FOUR-YEAR HIGH",
+         "Wholesale prices rose at their fastest pace in four years, hardening "
+         "the Fed's hawkish tone."),
+        (668, pict_arrow, "ANTHROPIC'S STRONG DEBUT",
+         "The AI lab opened sharply higher in its first session, the year's "
+         "biggest technology listing."),
+    )
+    for px, icon, title, body in briefs:
+        panel(draw, (px, 640, px + 296, 800))
+        icon(draw, px + 18, 662)
+        ts = fit(draw, title, 20, True, 220)
+        draw.text((px + 54, 662), title, font=F(ts, True), fill=WHITE)
+        draw_wrapped(draw, body, px + 18, 696, 15, False, GREY, 258, 21, 4)
 
+    # 6. Also today.
+    draw.text((MARGIN, 820), "ALSO TODAY", font=F(14, True), fill=GOLD)
+    pair(draw, "Kyiv: drones hit the power grid again",
+         "COP31 opens in Antalya", 44, 842)
+    pair(draw, "United Airlines cancels hundreds of flights",
+         "Asia bears the worst air pollution of 2026", 44, 868)
 
-def main() -> None:
-    img = build()
-    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "entry.png")
-    img.save(out, format="PNG", optimize=True)
-    size = os.path.getsize(out)
-    print(f"wrote entry.png ({img.width}x{img.height}, {size} bytes)")
+    # 7. Rule and footer.
+    draw.rectangle([44, 900, 980, 900], fill=EDGE)
+
+    fright = "THE HAGUE · BEIJING · TEHRAN · WASHINGTON"
+    rw = tw(draw, fright, 14, False)
+    draw.text((int(round(980 - rw)), 922), fright, font=F(14, False), fill=MUTED)
+
+    fleft = "19 NOVEMBER 2026 · THE DAY IN ONE IMAGE"
+    fs = fit(draw, fleft, 20, True, 980 - rw - 24 - MARGIN)
+    draw.text((MARGIN, 918), fleft, font=F(fs, True), fill=GOLD)
+
+    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, "entry.png")
+    img.save(path, "PNG")
+    print("%s (%d bytes)" % (path, os.path.getsize(path)))
 
 
 if __name__ == "__main__":
